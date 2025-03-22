@@ -2,6 +2,7 @@
 #include <cassert>
 #include <errno.h>
 #include <fcntl.h>
+#include <iostream>
 #include <netinet/ip.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -12,8 +13,12 @@
 #include <unistd.h>
 #include <vector>
 
-const size_t k_max_msg = 4096; // bitwise shift operation equal to 32 MB
+const size_t k_max_msg = 32 << 20; // bitwise shift operation equal to 32 MB
 
+/*This is created to remove efficiently from the front reducing its complexity
+from O(n^2) to O(n). We remove to the front leaving part of the buffer empty and
+then to append move the data to the front to make space for the new values
+*/
 struct Buffer {
   uint8_t *buffer_begin;
   uint8_t *buffer_end;
@@ -74,14 +79,6 @@ static Conn *handle_accept(int fd) {
   return conn;
 }
 
-// static void buf_append(std::vector<uint8_t> &incoming, const uint8_t *buf,
-//                        ssize_t rv) {
-//   incoming.insert(incoming.end(), buf, buf + rv);
-// }
-
-// static void buf_consume(std::vector<uint8_t> &incoming, ssize_t len) {
-//   incoming.erase(incoming.begin(), incoming.begin() + len);
-// }
 static void buf_append(Buffer *buf, const uint8_t *data, ssize_t rv) {
   ssize_t buffer_size =
       buf->buffer_end - buf->buffer_begin;             // Total allocated size
@@ -91,10 +88,8 @@ static void buf_append(Buffer *buf, const uint8_t *data, ssize_t rv) {
     ssize_t new_size = data_size + rv;
     uint8_t *new_buf = new uint8_t[new_size];
 
-    // Copy existing data
     memcpy(new_buf, buf->data_begin, data_size);
 
-    // Free old buffer and update pointers
     delete[] buf->buffer_begin;
     buf->buffer_begin = new_buf;
     buf->buffer_end = new_buf + new_size;
@@ -102,14 +97,12 @@ static void buf_append(Buffer *buf, const uint8_t *data, ssize_t rv) {
     buf->data_end = new_buf + data_size;
   }
 
-  // Append new data at the end
   memcpy(buf->data_end, data, rv);
   buf->data_end += rv;
 }
 
 static void buf_consume(Buffer *buf, ssize_t len) {
   if (len > (ssize_t)(buf->data_end - buf->data_begin)) {
-    // If we consume more than we have, just reset the buffer
     buf->data_begin = buf->buffer_begin;
     buf->data_end = buf->buffer_begin;
   } else {
@@ -122,8 +115,6 @@ static void buf_consume(Buffer *buf, ssize_t len) {
 }
 
 static bool try_one_request(Conn *conn) {
-  // 3. Try to parse the accumulated buffer.
-  // Protocol: message header
   if ((conn->incoming.data_end - conn->incoming.data_begin) < 4) {
     return false; // want read
   }
@@ -149,7 +140,7 @@ static bool try_one_request(Conn *conn) {
 }
 
 static void handle_write(Conn *conn) {
-  assert((conn->incoming.data_end - conn->incoming.data_begin) > 0);
+  assert((conn->outgoing.data_end - conn->outgoing.data_begin) > 0);
   ssize_t rv = write(conn->fd, conn->outgoing.data_begin,
                      conn->outgoing.data_end - conn->outgoing.data_begin);
   if (rv < 0 && errno == EAGAIN) {
@@ -191,14 +182,10 @@ static void handle_read(Conn *conn) {
     conn->want_close = true;
     return;
   }
-  // 2. Add new data to the `Conn::incoming` buffer.
   buf_append(&conn->incoming, buf, (size_t)rv);
-  // 3. Try to parse the accumulated buffer.
-  // 4. Process the parsed message.
-  // 5. Remove the message from `Conn::incoming`.
   while (try_one_request(conn)) {
   }
-  if ((conn->incoming.data_end - conn->incoming.data_begin) >
+  if ((conn->outgoing.data_end - conn->outgoing.data_begin) >
       0) { // has a response
     conn->want_read = false;
     conn->want_write = true;
