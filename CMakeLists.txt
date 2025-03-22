@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.10)
+project(My_redis)
+add_executable(client src/client.cpp)
+add_executable(server src/server.cpp)
+set(CMAKE_CXX_FLAGS "-Wall -Wextra")
